@@ -1,0 +1,109 @@
+---
+- name: Deploy Postgres on DB host
+  hosts: db
+  become: yes
+  vars:
+    pg_user: postgres
+    pg_password: postgres
+  tasks:
+    - name: Pull Postgres image
+      community.docker.docker_image:
+        name: postgres
+        tag: latest
+        source: pull
+
+    - name: Run Postgres container
+      community.docker.docker_container:
+        name: db
+        image: postgres:latest
+        state: started
+        restart_policy: always
+        env:
+          POSTGRES_USER: "{{ pg_user }}"
+          POSTGRES_PASSWORD: "{{ pg_password }}"
+        published_ports:
+          - "5432:5432"
+        volumes:
+          - /var/lib/postgresql/data:/var/lib/postgresql/data
+
+- name: Deploy Redis + Worker on Backend host
+  hosts: backend
+  become: yes
+  vars:
+    dockerhub_user: "fmtorres"      # CHANGE if needed
+    db_host: "{{ hostvars['postgres-1']['ansible_host'] }}"
+  tasks:
+    - name: Pull Redis
+      community.docker.docker_image:
+        name: redis
+        tag: latest
+        source: pull
+
+    - name: Run Redis
+      community.docker.docker_container:
+        name: redis
+        image: redis:latest
+        state: started
+        restart_policy: always
+        published_ports: []
+        command: ["redis-server", "--appendonly", "yes"]
+
+    - name: Pull Worker image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/worker"
+        tag: latest
+        source: pull
+
+    - name: Run Worker
+      community.docker.docker_container:
+        name: worker-svc
+        image: "docker.io/{{ dockerhub_user }}/worker:latest"
+        state: started
+        restart_policy: always
+        env:
+          REDIS_HOST: "redis"
+          DB_HOST: "{{ db_host }}"
+
+- name: Deploy Vote + Result on Frontend host
+  hosts: frontend
+  become: yes
+  vars:
+    dockerhub_user: "fmtorres"      # CHANGE if needed
+    backend_host: "{{ hostvars['backend-1']['ansible_host'] }}"
+    db_host: "{{ hostvars['postgres-1']['ansible_host'] }}"
+  tasks:
+    - name: Pull Vote image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/vote"
+        tag: latest
+        source: pull
+
+    - name: Pull Result image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/result"
+        tag: latest
+        source: pull
+
+    - name: Run Vote (port 80 in container -> 80 on host)
+      community.docker.docker_container:
+        name: vote-app
+        image: "docker.io/{{ dockerhub_user }}/vote:latest"
+        state: started
+        restart_policy: always
+        env:
+          REDIS_HOST: "{{ backend_host }}"
+          PORT: "80"
+        published_ports:
+          - "80:80"
+
+    - name: Run Result (port 8081 in container -> 8081 on host)
+      community.docker.docker_container:
+        name: result-app
+        image: "docker.io/{{ dockerhub_user }}/result:latest"
+        state: started
+        restart_policy: always
+        env:
+          PG_HOST: "{{ db_host }}"
+          PORT: "8081"
+        published_ports:
+          - "8081:8081"

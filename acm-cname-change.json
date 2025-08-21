@@ -1,0 +1,14 @@
+{
+  "Comment": "ACM validation CNAME for vote.diogotest.local",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_xxxxxxxxxxxxxxxxxxxx.vote.diogotest.local.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "_yyyyyyyyyyyyyyyyyyyy.acm-validations.aws." }]
+      }
+    }
+  ]
+}

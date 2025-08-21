@@ -1,0 +1,65 @@
+---
+- name: Deploy Vote + Result on Frontend host
+  hosts: frontend
+  become: yes
+  vars:
+    dockerhub_user: "fmtorres"                # change if needed
+    pg_host: "{{ hostvars['postgres-1']['ansible_host'] }}"
+    backend_host: "{{ hostvars['backend-1']['ansible_host'] }}"
+
+  tasks:
+    - name: Pull Vote image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/vote"
+        tag: latest
+        source: pull
+
+    - name: Run Vote (port 80)
+      community.docker.docker_container:
+        name: vote-app
+        image: "docker.io/{{ dockerhub_user }}/vote:latest"
+        state: started
+        restart_policy: always
+        recreate: true
+        restart: yes
+        env:
+          REDIS_HOST: "{{ backend_host }}"
+          PORT: "80"
+        published_ports:
+          - "80:80"
+
+    - name: Pull Result image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/result"
+        tag: latest
+        source: pull
+
+    - name: Run Result (port 8081 externally, 8081 in container)
+      community.docker.docker_container:
+        name: result-app
+        image: "docker.io/{{ dockerhub_user }}/result:latest"
+        state: started
+        restart_policy: always
+        recreate: true
+        restart: yes
+        env:
+          # canonical pg vars (what node-postgres reads automatically)
+          PGHOST: "{{ pg_host }}"
+          PGPORT: "5432"
+          PGUSER: "postgres"
+          PGPASSWORD: "postgres"
+          PGDATABASE: "postgres"
+
+          # aliases (in case app code reads these)
+          PG_HOST: "{{ pg_host }}"
+          PG_PORT: "5432"
+          PG_USER: "postgres"
+          PG_PASSWORD: "postgres"
+          POSTGRES_HOST: "{{ pg_host }}"
+          DB_HOST: "{{ pg_host }}"
+
+          # app port (you already validated it listens on 8081)
+          PORT: "8081"
+
+        published_ports:
+          - "8081:8081"

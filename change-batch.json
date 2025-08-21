@@ -1,0 +1,14 @@
+{
+  "Comment": "ACM validation for vote.yourdomain.com",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_eb336d9bf9f4bcf26f86b1d38c4852bc.vote.yourdomain.com.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "_2d76ac5cbdbf7f00018badfa5c534db7.xlfgrmvvlj.acm-validations.aws." }]
+      }
+    }
+  ]
+}

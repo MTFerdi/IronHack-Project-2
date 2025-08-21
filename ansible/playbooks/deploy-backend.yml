@@ -1,0 +1,58 @@
+---
+- name: Deploy Redis + Worker on Backend host
+  hosts: backend
+  become: yes
+  vars:
+    dockerhub_user: "fmtorres"     # change if needed
+    db_host: "{{ hostvars['postgres-1']['ansible_host'] }}"
+
+  tasks:
+    - name: Ensure backend Docker network exists
+      community.docker.docker_network:
+        name: backend_net
+        state: present
+
+    - name: Pull Redis
+      community.docker.docker_image:
+        name: redis
+        tag: latest
+        source: pull
+
+    - name: Run Redis (publish 6379, join backend_net)
+      community.docker.docker_container:
+        name: redis
+        image: redis:latest
+        state: started
+        restart_policy: always
+        recreate: true
+        restart: yes
+        published_ports:
+          - "6379:6379"                   # keep published so FRONTEND can reach via 10.0.2.20:6379
+        networks:
+          - name: backend_net
+        command: ["redis-server", "--appendonly", "yes"]
+
+    - name: Pull Worker image
+      community.docker.docker_image:
+        name: "docker.io/{{ dockerhub_user }}/worker"
+        tag: latest
+        source: pull
+
+    - name: Run Worker (on backend_net; talk to Redis by name)
+      community.docker.docker_container:
+        name: worker-svc
+        image: "docker.io/{{ dockerhub_user }}/worker:latest"
+        state: started
+        restart_policy: always
+        recreate: true
+        restart: yes
+        env:
+          # talk to Redis by container name (same network)
+          REDIS_HOST: "redis"
+          # Postgres on DB host
+          DB_HOST: "{{ db_host }}"
+          DB_USER: "postgres"
+          DB_USERNAME: "postgres"        # (set both keys just in case)
+          DB_PASSWORD: "postgres"
+        networks:
+          - name: backend_net

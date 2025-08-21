@@ -1,0 +1,6 @@
+[
+  {
+    "Type": "forward",
+    "TargetGroupArn": "arn:aws:elasticloadbalancing:ca-west-1:438465169137:targetgroup/ironhack-tg-vote/5bd37dbe68bed3ed"
+  }
+]

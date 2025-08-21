@@ -1,0 +1,13 @@
+[
+  {
+    "Type": "redirect",
+    "RedirectConfig": {
+      "Protocol": "HTTP",
+      "Port": "80",
+      "Host": "#{host}",
+      "Path": "/",
+      "Query": "#{query}",
+      "StatusCode": "HTTP_301"
+    }
+  }
+]
