@@ -28,3 +28,34 @@ terraform.tfvars
 
 # Docker
 *.env
+# OS / editor
+.DS_Store
+*.swp
+
+# Python / Node (if any)
+__pycache__/
+node_modules/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
+tfplan
+
+# Ansible
+*.retry
+
+# Logs
+*.log
+
+# Local scripts/output
+*.out
+*.tmp
