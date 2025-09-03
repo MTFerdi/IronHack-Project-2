@@ -4,59 +4,120 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'vote/**'
-      - 'result/**'
-      - 'K8s/**'
-      - '.github/workflows/**'
+      - "vote/**"
+      - "result/**"
+      - "K8s/**"
+      - ".github/workflows/**"
+
+concurrency:
+  group: voting-app-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  NAMESPACE: voting
+  IMAGE_VOTE:  ${{ secrets.DOCKERHUB_USERNAME }}/vote
+  IMAGE_RESULT: ${{ secrets.DOCKERHUB_USERNAME }}/result
+
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install kubectl
+      # ---------- Build & push Docker images ----------
+      - name: Set image tags
+        shell: bash
+        run: |
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "VOTE_TAG=${IMAGE_VOTE}:${GITHUB_SHA}" >> $GITHUB_ENV
+          echo "RESULT_TAG=${IMAGE_RESULT}:${GITHUB_SHA}" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push vote image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vote
+          file: ./vote/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.VOTE_TAG }}
+            ${{ env.IMAGE_VOTE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push result image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./result
+          file: ./result/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.RESULT_TAG }}
+            ${{ env.IMAGE_RESULT }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------- Kubernetes access setup (this is the critical part) ----------
+      - name: Install kubectl 1.29.6
         uses: azure/setup-kubectl@v4
         with:
-          version: 'v1.29.6'
+          version: v1.29.6
 
-      - name: Write kubeconfig from secret
-        env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_CI }}
+      - name: Write kubeconfig from secret & export KUBECONFIG
+        shell: bash
         run: |
-          echo "$KUBECONFIG_B64" | base64 -d > kubeconfig
-          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+          set -euo pipefail
+          test -n "${{ secrets.KUBECONFIG_CI_B64 }}" || { echo "KUBECONFIG_CI_B64 is empty"; exit 1; }
+          echo "${{ secrets.KUBECONFIG_CI_B64 }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
 
-      - name: Cluster info
-        run: |
-          kubectl version --client
-          kubectl get nodes -o wide
+      - name: Sanity check kubectl (client only)
+        run: kubectl version --client
 
-      - name: Apply manifests
+      - name: Verify cluster access (namespace-scoped)
         run: |
-          # namespace first
-          kubectl apply -f K8s/base/namespace.yaml
-          # then everything else
-          kubectl -n voting apply -f K8s/base/postgres/
-          kubectl -n voting apply -f K8s/base/redis/
-          kubectl -n voting apply -f K8s/base/vote/
-          kubectl -n voting apply -f K8s/base/result/
-          kubectl -n voting apply -f K8s/base/worker/
-          kubectl -n voting apply -f K8s/base/ingress/
-          kubectl -n voting apply -f K8s/base/hpa/ || true  # if HPA dir exists
+          set -euo pipefail
+          kubectl config current-context
+          kubectl -n $NAMESPACE get deploy
+          kubectl -n $NAMESPACE get svc
+
+      # ---------- Roll out new images ----------
+      # If your Deployments already exist, updating the image is the safest, RBAC-friendly path.
+      - name: Update images on Deployments
+        run: |
+          set -euo pipefail
+          kubectl -n $NAMESPACE set image deploy/vote   vote=${{ env.VOTE_TAG }}
+          kubectl -n $NAMESPACE set image deploy/result result=${{ env.RESULT_TAG }}
 
       - name: Wait for rollouts
         run: |
-          set -e
-          for d in vote result worker postgres redis; do
-            kubectl -n voting rollout status deploy/$d --timeout=180s
-          done
+          set -euo pipefail
+          kubectl -n $NAMESPACE rollout status deploy/vote --timeout=240s
+          kubectl -n $NAMESPACE rollout status deploy/result --timeout=240s
 
-      - name: Print services & ingress
-        run: kubectl -n voting get svc,ingress -o wide
+      - name: Post-deploy snapshot
+        if: always()
+        run: |
+          echo "---- Deployments ----"
+          kubectl -n $NAMESPACE get deploy -o wide
+          echo "---- Pods ----"
+          kubectl -n $NAMESPACE get pods -o wide
+          echo "---- Services ----"
+          kubectl -n $NAMESPACE get svc -o wide
+
