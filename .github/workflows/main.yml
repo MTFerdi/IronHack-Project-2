@@ -1,1 +1,62 @@
+name: CI/CD - Voting App
 
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'vote/**'
+      - 'result/**'
+      - 'K8s/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.29.6'
+
+      - name: Write kubeconfig from secret
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_CI }}
+        run: |
+          echo "$KUBECONFIG_B64" | base64 -d > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+
+      - name: Cluster info
+        run: |
+          kubectl version --client
+          kubectl get nodes -o wide
+
+      - name: Apply manifests
+        run: |
+          # namespace first
+          kubectl apply -f K8s/base/namespace.yaml
+          # then everything else
+          kubectl -n voting apply -f K8s/base/postgres/
+          kubectl -n voting apply -f K8s/base/redis/
+          kubectl -n voting apply -f K8s/base/vote/
+          kubectl -n voting apply -f K8s/base/result/
+          kubectl -n voting apply -f K8s/base/worker/
+          kubectl -n voting apply -f K8s/base/ingress/
+          kubectl -n voting apply -f K8s/base/hpa/ || true  # if HPA dir exists
+
+      - name: Wait for rollouts
+        run: |
+          set -e
+          for d in vote result worker postgres redis; do
+            kubectl -n voting rollout status deploy/$d --timeout=180s
+          done
+
+      - name: Print services & ingress
+        run: kubectl -n voting get svc,ingress -o wide
