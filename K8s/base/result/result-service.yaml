@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: result-service
+  namespace: voting
+  labels:
+    app: result
+spec:
+  type: ClusterIP
+  selector:
+    app: result
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80     # change this later if container listens on a different port

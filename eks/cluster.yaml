@@ -1,0 +1,32 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ironhack-voting-eks
+  region: af-south-1
+  version: "1.29"
+
+iam:
+  withOIDC: true
+
+vpc:
+  # Let eksctl create the VPC/subnets. (Fine for labs/prod-like demos.)
+  # To use existing VPC, this block can be replaced with explicit IDs.
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: false
+
+managedNodeGroups:
+  - name: ng-app
+    instanceType: t3.medium
+    desiredCapacity: 3
+    minSize: 2
+    maxSize: 4
+    volumeSize: 50
+    ssh:
+      allow: false
+    labels:
+      role: app
+    tags:
+      project: ironhack-voting
+      env: lab
