@@ -6,118 +6,81 @@ on:
     paths:
       - "vote/**"
       - "result/**"
+      - "worker/**"
       - "K8s/**"
-      - ".github/workflows/**"
+      - ".github/workflows/main.yml"
+  workflow_dispatch:
 
+# Prevent overlapping deploys
 concurrency:
-  group: voting-app-${{ github.ref }}
+  group: ci-deploy-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
-env:
-  NAMESPACE: voting
-  IMAGE_VOTE:  ${{ secrets.DOCKERHUB_USERNAME }}/vote
-  IMAGE_RESULT: ${{ secrets.DOCKERHUB_USERNAME }}/result
-
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- Build & push Docker images ----------
-      - name: Set image tags
-        shell: bash
-        run: |
-          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          echo "VOTE_TAG=${IMAGE_VOTE}:${GITHUB_SHA}" >> $GITHUB_ENV
-          echo "RESULT_TAG=${IMAGE_RESULT}:${GITHUB_SHA}" >> $GITHUB_ENV
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & push vote image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./vote
-          file: ./vote/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.VOTE_TAG }}
-            ${{ env.IMAGE_VOTE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build & push result image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./result
-          file: ./result/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.RESULT_TAG }}
-            ${{ env.IMAGE_RESULT }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ---------- Kubernetes access setup (this is the critical part) ----------
-      - name: Install kubectl 1.29.6
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.29.6
-
-      - name: Write kubeconfig from secret & export KUBECONFIG
-        shell: bash
+      - name: Install kubectl
         run: |
           set -euo pipefail
-          test -n "${{ secrets.KUBECONFIG_CI_B64 }}" || { echo "KUBECONFIG_CI_B64 is empty"; exit 1; }
-          echo "${{ secrets.KUBECONFIG_CI_B64 }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
-          chmod 600 "$RUNNER_TEMP/kubeconfig"
-          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
 
-      - name: Sanity check kubectl (client only)
-        run: kubectl version --client
-
-      - name: Verify cluster access (namespace-scoped)
+      - name: Setup kubeconfig from base64 secret
+        env:
+          KUBECONFIG_CI_B64: ${{ secrets.KUBECONFIG_CI_B64 }}
         run: |
           set -euo pipefail
-          kubectl config current-context
-          kubectl -n $NAMESPACE get deploy
-          kubectl -n $NAMESPACE get svc
+          if [ -z "${KUBECONFIG_CI_B64:-}" ]; then
+            echo "KUBECONFIG_CI_B64 is empty"; exit 1
+          fi
+          KUBECONFIG_FILE="$RUNNER_TEMP/kubeconfig"
+          # strip CR just in case and decode
+          echo "${KUBECONFIG_CI_B64}" | tr -d '\r' | base64 -d > "${KUBECONFIG_FILE}"
+          echo "KUBECONFIG=${KUBECONFIG_FILE}" >> "$GITHUB_ENV"
+          head -n1 "${KUBECONFIG_FILE}"
 
-      # ---------- Roll out new images ----------
-      # If your Deployments already exist, updating the image is the safest, RBAC-friendly path.
-      - name: Update images on Deployments
+      - name: Quick connectivity (namespace-scoped only)
         run: |
           set -euo pipefail
-          kubectl -n $NAMESPACE set image deploy/vote   vote=${{ env.VOTE_TAG }}
-          kubectl -n $NAMESPACE set image deploy/result result=${{ env.RESULT_TAG }}
+          kubectl -n voting get deploy >/dev/null || true
 
-      - name: Wait for rollouts
+      - name: Apply manifests (namespace-scoped only)
         run: |
           set -euo pipefail
-          kubectl -n $NAMESPACE rollout status deploy/vote --timeout=240s
-          kubectl -n $NAMESPACE rollout status deploy/result --timeout=240s
+          # Postgres (PVC/Deploy/Service/Secret are namespace-scoped)
+          kubectl -n voting apply -f K8s/base/postgres/
 
-      - name: Post-deploy snapshot
-        if: always()
+          # Redis
+          kubectl -n voting apply -f K8s/base/redis/
+
+          # Vote / Result / Worker
+          kubectl -n voting apply -f K8s/base/vote/
+          kubectl -n voting apply -f K8s/base/result/
+          kubectl -n voting apply -f K8s/base/worker/
+
+          # Ingress (Ingress is namespace-scoped)
+          kubectl -n voting apply -f K8s/base/ingress/
+
+          # HPA (if present)
+          if [ -d K8s/base/hpa ]; then
+            kubectl -n voting apply -f K8s/base/hpa/ || true
+          fi
+
+      - name: Rollout status
         run: |
-          echo "---- Deployments ----"
-          kubectl -n $NAMESPACE get deploy -o wide
-          echo "---- Pods ----"
-          kubectl -n $NAMESPACE get pods -o wide
-          echo "---- Services ----"
-          kubectl -n $NAMESPACE get svc -o wide
+          set -euo pipefail
+          for d in postgres redis vote result worker; do
+            kubectl -n voting rollout status deploy/$d --timeout=180s || true
+          done
 
+      - name: Show status
+        run: |
+          kubectl -n voting get deploy,svc,pods -o wide
